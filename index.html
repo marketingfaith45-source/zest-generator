@@ -523,43 +523,118 @@ let ORDERE_API_KEY = '';
 const setGlobalApiKey = (k) => { ORDERE_API_KEY = k; if(k) window._ordereApiKey = k; };
 const getGlobalApiKey = () => ORDERE_API_KEY || window._ordereApiKey || '';
 
-// Cloud API endpoint (works when deployed to Vercel)
-const CLOUD_API = (typeof window !== 'undefined' && window.location.protocol !== 'file:')
-  ? window.location.origin + '/api/data' : null;
-let APP_PASSWORD = (typeof localStorage !== 'undefined' && localStorage.getItem('zest-app-password')) || '';
+// Auth-based cloud storage
+const IS_CLOUD = window.location.protocol !== 'file:';
+const API_BASE = IS_CLOUD ? window.location.origin : '';
+let AUTH_TOKEN = localStorage.getItem('zest-auth-token') || '';
+let CURRENT_USER = null;
+try { CURRENT_USER = JSON.parse(localStorage.getItem('zest-current-user')||'null'); }catch(e){}
 
 async function storageGet(key){
-  // Try cloud storage first (when deployed)
-  if(CLOUD_API && APP_PASSWORD){
+  if(IS_CLOUD && AUTH_TOKEN){
     try{
-      const r = await fetch(CLOUD_API + '?key=' + encodeURIComponent(key), {
-        headers: { 'x-app-password': APP_PASSWORD }
+      const r = await fetch(API_BASE+'/api/data?key='+encodeURIComponent(key),{
+        headers:{'Authorization':'Bearer '+AUTH_TOKEN}
       });
-      if(r.ok){ const d = await r.json(); if(d.data !== null && d.data !== undefined) return d.data; }
-    } catch(e){}
+      if(r.ok){ const d=await r.json(); if(d.data!=null) return d.data; }
+    }catch(e){}
   }
-  // Fallback: localStorage
   try{ return localStorage.getItem(key); }catch(e){ return null; }
 }
-
-async function storageSet(key, value){
-  // Always save to localStorage (instant)
-  try{ localStorage.setItem(key, value); }catch(e){}
-  // Also save to cloud (when deployed)
-  if(CLOUD_API && APP_PASSWORD){
+async function storageSet(key,value){
+  try{ localStorage.setItem(key,value); }catch(e){}
+  if(IS_CLOUD && AUTH_TOKEN){
     try{
-      fetch(CLOUD_API + '?key=' + encodeURIComponent(key), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-app-password': APP_PASSWORD },
-        body: JSON.stringify({ value })
+      await fetch(API_BASE+'/api/data?key='+encodeURIComponent(key),{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH_TOKEN},
+        body:JSON.stringify({value})
       });
-    } catch(e){}
+    }catch(e){}
   }
+}
+async function apiLogin(username,password){
+  const r=await fetch(API_BASE+'/api/auth?action=login',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username,password})
+  });
+  const d=await r.json();
+  if(d.success){
+    AUTH_TOKEN=d.token; CURRENT_USER=d.user;
+    localStorage.setItem('zest-auth-token',d.token);
+    localStorage.setItem('zest-current-user',JSON.stringify(d.user));
+  }
+  return d;
+}
+async function apiLogout(){
+  try{ await fetch(API_BASE+'/api/auth?action=logout',{method:'POST',headers:{'Authorization':'Bearer '+AUTH_TOKEN}}); }catch(e){}
+  AUTH_TOKEN=''; CURRENT_USER=null;
+  localStorage.removeItem('zest-auth-token');
+  localStorage.removeItem('zest-current-user');
 }
 
 // ---------- Main App ----------
+function LoginScreen({onLogin}){
+  const [username, setUsername] = React.useState('');
+  const [password, setPassword] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+  const [error, setError] = React.useState('');
+
+  const login = async()=>{
+    if(!username || !password){ setError('Enter username and password'); return; }
+    setLoading(true); setError('');
+    if(IS_CLOUD){
+      const d = await apiLogin(username, password);
+      if(d.success) onLogin(d.user);
+      else setError(d.error || 'Invalid credentials');
+    } else {
+      // Local mode - simple password
+      if(password === 'zest2024' || password === (localStorage.getItem('local-password')||'zest2024')){
+        const user = {username, role:'admin', name: username};
+        CURRENT_USER = user;
+        localStorage.setItem('zest-current-user', JSON.stringify(user));
+        onLogin(user);
+      } else setError('Invalid password. Default: zest2024');
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div style={{minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'var(--paper-2)'}}>
+      <div style={{background:'white', borderRadius:16, padding:'40px 36px', width:380, boxShadow:'0 8px 32px rgba(0,0,0,0.12)'}}>
+        <div style={{textAlign:'center', marginBottom:28}}>
+          <div style={{width:56, height:56, borderRadius:14, background:'var(--clay)', display:'flex', alignItems:'center', justifyContent:'center', margin:'0 auto 14px', fontSize:24}}>🎨</div>
+          <h2 style={{margin:0, fontSize:22, fontWeight:800}}>Design Generator</h2>
+          <p style={{margin:'6px 0 0', color:'var(--muted)', fontSize:13.5}}>Sign in to continue</p>
+        </div>
+        {error && <div style={{background:'#f8d7da', color:'#842029', borderRadius:8, padding:'10px 14px', marginBottom:14, fontSize:13.5}}>{error}</div>}
+        <div style={{marginBottom:14}}>
+          <label style={{fontSize:13, fontWeight:600, display:'block', marginBottom:5}}>Username</label>
+          <input type="text" value={username} onChange={e=>setUsername(e.target.value)}
+            placeholder="your username" onKeyDown={e=>e.key==='Enter'&&login()}
+            style={{width:'100%', padding:'10px 12px', border:'1px solid var(--line)', borderRadius:8, fontSize:14, boxSizing:'border-box'}} />
+        </div>
+        <div style={{marginBottom:22}}>
+          <label style={{fontSize:13, fontWeight:600, display:'block', marginBottom:5}}>Password</label>
+          <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
+            placeholder="your password" onKeyDown={e=>e.key==='Enter'&&login()}
+            style={{width:'100%', padding:'10px 12px', border:'1px solid var(--line)', borderRadius:8, fontSize:14, boxSizing:'border-box'}} />
+        </div>
+        <button onClick={login} disabled={loading}
+          style={{width:'100%', padding:'12px', background:'var(--clay)', color:'white', border:'none', borderRadius:8, fontSize:15, fontWeight:700, cursor:'pointer'}}>
+          {loading ? '⏳ Signing in...' : '→ Sign In'}
+        </button>
+        {!IS_CLOUD && <p style={{textAlign:'center', fontSize:11.5, color:'var(--muted)', marginTop:14}}>Local mode — default password: zest2024</p>}
+      </div>
+    </div>
+  );
+}
+
 function App(){
   const [tab, setTab] = useState('businesses');
+  const [currentUser, setCurrentUser] = useState(CURRENT_USER);
+  const isLoggedIn = !!currentUser || !IS_CLOUD;
   const [businesses, setBusinesses] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [scheduleQueue, setScheduleQueue] = useState([]);
@@ -742,7 +817,17 @@ function App(){
             <div className="brand-sub">Business logo &amp; offer automation</div>
           </div>
         </div>
-        <nav className="tabs">
+        {/* User info bar */}
+      {currentUser && (
+        <div style={{background:'var(--ink)', color:'white', padding:'6px 20px', display:'flex', alignItems:'center', justifyContent:'space-between', fontSize:12.5}}>
+          <span>👤 <b>{currentUser.name}</b> <span style={{opacity:0.6, marginLeft:6}}>{currentUser.role}</span></span>
+          <button onClick={async()=>{ await apiLogout(); setCurrentUser(null); }}
+            style={{background:'none', border:'1px solid rgba(255,255,255,0.3)', color:'white', borderRadius:6, padding:'3px 10px', cursor:'pointer', fontSize:12}}>
+            Sign out
+          </button>
+        </div>
+      )}
+      <nav className="tabs">
           <button className={tab==='businesses'?'active':''} onClick={()=>setTab('businesses')}>Businesses</button>
           <button className={tab==='templates'?'active':''} onClick={()=>setTab('templates')}>Templates</button>
           <button className={tab==='generate'?'active':''} onClick={()=>setTab('generate')}>Generate</button>
@@ -768,7 +853,7 @@ function App(){
         {tab==='templates' && <TemplatesTab templates={templates} saveTemplates={saveTemplates} />}
         {tab==='generate' && <GenerateTab businesses={businesses} templates={templates} scheduleQueue={scheduleQueue} saveScheduleQueue={saveScheduleQueue} fbSettings={fbSettings} ordereSettings={ordereSettings} />}
         {tab==='schedule' && <ScheduleTab scheduleQueue={scheduleQueue} saveScheduleQueue={saveScheduleQueue} businesses={businesses} templates={templates} fbSettings={fbSettings} ordereSettings={ordereSettings} />}
-        {tab==='settings' && <SettingsTab fbSettings={fbSettings} saveFbSettings={saveFbSettings} ordereSettings={ordereSettings} saveOrdereSettings={saveOrdereSettings} onOrdereSync={handleOrdereSync} />}
+        {tab==='settings' && <SettingsTab fbSettings={fbSettings} saveFbSettings={saveFbSettings} ordereSettings={ordereSettings} saveOrdereSettings={saveOrdereSettings} onOrdereSync={handleOrdereSync} currentUser={currentUser} />}
         {tab==='report' && <ReportTab scheduleQueue={scheduleQueue} businesses={businesses} />}
       </main>
       <div className="footer-note">Every business you add is saved automatically — next month just update the offer and generate again.</div>
@@ -2018,6 +2103,11 @@ function SettingsTab({fbSettings, saveFbSettings, ordereSettings, saveOrdereSett
         </div>
       </div>
 
+      {/* User Management - Admin only */}
+      {IS_CLOUD && currentUser?.role === 'admin' && (
+        <UserManagement />
+      )}
+
       {/* How it works */}
       <div className="card">
         <h2 className="section-title">ℹ️ How It Works</h2>
@@ -2582,6 +2672,120 @@ function ReportTab({scheduleQueue, businesses}){
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function UserManagement(){
+  const [users, setUsers] = React.useState({});
+  const [loading, setLoading] = React.useState(false);
+  const [form, setForm] = React.useState({username:'', password:'', name:'', role:'manager'});
+  const [msg, setMsg] = React.useState('');
+
+  const loadUsers = async()=>{
+    if(!IS_CLOUD) return;
+    try{
+      const r = await fetch(API_BASE+'/api/users', {headers:{'Authorization':'Bearer '+AUTH_TOKEN}});
+      const d = await r.json();
+      if(d.users) setUsers(d.users);
+    }catch(e){}
+  };
+
+  React.useEffect(()=>{ loadUsers(); },[]);
+
+  const addUser = async()=>{
+    if(!form.username||!form.password||!form.name){ setMsg('All fields required'); return; }
+    setLoading(true);
+    try{
+      const r = await fetch(API_BASE+'/api/users',{
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH_TOKEN},
+        body:JSON.stringify(form)
+      });
+      const d = await r.json();
+      if(d.success){ setMsg('✅ User added!'); setForm({username:'',password:'',name:'',role:'manager'}); loadUsers(); }
+      else setMsg('❌ '+d.error);
+    }catch(e){ setMsg('❌ Error'); }
+    setLoading(false);
+  };
+
+  const deleteUser = async(username)=>{
+    if(!confirm('Delete user: '+username+'?')) return;
+    await fetch(API_BASE+'/api/users',{
+      method:'DELETE',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+AUTH_TOKEN},
+      body:JSON.stringify({username})
+    });
+    loadUsers();
+  };
+
+  return (
+    <div className="card">
+      <h2 className="section-title">👥 User Management</h2>
+      <p className="section-desc">Add or remove team members. Managers can generate and schedule. Only admin can edit templates and businesses.</p>
+
+      {/* Current users */}
+      <div style={{marginBottom:18}}>
+        <h4 style={{marginBottom:8}}>Current Users</h4>
+        <table style={{width:'100%', borderCollapse:'collapse', fontSize:13}}>
+          <thead><tr style={{background:'var(--paper-2)'}}>
+            <th style={{padding:'8px 10px', textAlign:'left'}}>Username</th>
+            <th style={{padding:'8px 10px', textAlign:'left'}}>Name</th>
+            <th style={{padding:'8px 10px', textAlign:'left'}}>Role</th>
+            <th style={{padding:'8px 10px'}}></th>
+          </tr></thead>
+          <tbody>
+            <tr style={{borderBottom:'1px solid var(--line)'}}>
+              <td style={{padding:'8px 10px'}}>admin</td>
+              <td style={{padding:'8px 10px'}}>Admin</td>
+              <td style={{padding:'8px 10px'}}><span className="pill" style={{background:'#f8d7da', color:'#842029'}}>admin</span></td>
+              <td style={{padding:'8px 10px', textAlign:'center'}}>—</td>
+            </tr>
+            {Object.entries(users).map(([uname, u])=>(
+              <tr key={uname} style={{borderBottom:'1px solid var(--line)'}}>
+                <td style={{padding:'8px 10px'}}>{uname}</td>
+                <td style={{padding:'8px 10px'}}>{u.name}</td>
+                <td style={{padding:'8px 10px'}}><span className="pill">{u.role}</span></td>
+                <td style={{padding:'8px 10px', textAlign:'center'}}>
+                  <button className="btn btn-danger" style={{padding:'3px 10px', fontSize:12}} onClick={()=>deleteUser(uname)}>Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Add new user */}
+      <h4 style={{marginBottom:8}}>Add New User</h4>
+      {msg && <div style={{padding:'8px 12px', borderRadius:7, background: msg.startsWith('✅')?'#d1e7dd':'#f8d7da', marginBottom:10, fontSize:13}}>{msg}</div>}
+      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:10}}>
+        <div>
+          <label style={{fontSize:12, fontWeight:600}}>Full Name</label>
+          <input value={form.name} onChange={e=>setForm(p=>({...p,name:e.target.value}))} placeholder="e.g. Sarah Jones"
+            style={{width:'100%', padding:'8px 10px', border:'1px solid var(--line)', borderRadius:7, fontSize:13, marginTop:4}} />
+        </div>
+        <div>
+          <label style={{fontSize:12, fontWeight:600}}>Username</label>
+          <input value={form.username} onChange={e=>setForm(p=>({...p,username:e.target.value}))} placeholder="e.g. sarah"
+            style={{width:'100%', padding:'8px 10px', border:'1px solid var(--line)', borderRadius:7, fontSize:13, marginTop:4}} />
+        </div>
+        <div>
+          <label style={{fontSize:12, fontWeight:600}}>Password</label>
+          <input type="password" value={form.password} onChange={e=>setForm(p=>({...p,password:e.target.value}))} placeholder="Set a password"
+            style={{width:'100%', padding:'8px 10px', border:'1px solid var(--line)', borderRadius:7, fontSize:13, marginTop:4}} />
+        </div>
+        <div>
+          <label style={{fontSize:12, fontWeight:600}}>Role</label>
+          <select value={form.role} onChange={e=>setForm(p=>({...p,role:e.target.value}))}
+            style={{width:'100%', padding:'8px 10px', border:'1px solid var(--line)', borderRadius:7, fontSize:13, marginTop:4}}>
+            <option value="manager">Manager (generate + schedule)</option>
+            <option value="admin">Admin (full access)</option>
+          </select>
+        </div>
+      </div>
+      <button className="btn btn-primary" onClick={addUser} disabled={loading}>
+        {loading ? '⏳ Adding...' : '+ Add User'}
+      </button>
     </div>
   );
 }

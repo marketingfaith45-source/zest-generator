@@ -1,0 +1,8 @@
+{
+  "name": "zest-design-generator",
+  "version": "1.0.0",
+  "description": "Design Generator for UK Restaurants",
+  "dependencies": {
+    "@vercel/kv": "^1.0.0"
+  }
+}
